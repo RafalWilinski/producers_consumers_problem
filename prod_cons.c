@@ -6,35 +6,66 @@
 #include <unistd.h>
 
 #define BUFFER_SIZE 5
-#define PRODUCERS_COUNT 5
-#define CONSUMERS_COUNT 9
+#define PRODUCERS_COUNT 2
+#define CONSUMERS_COUNT 2
 #define HOW_MANY_ITERATIONS 1024
 
-typedef struct
-{
-    int buf[BUFFER_SIZE];  
-    int in;               
-    int out;
-    int full_sid;
-    int empty_sid;
-    struct sembuf full_sem;
-    struct sembuf empty_sem;
-
-} sbuf_t;
-
-sbuf_t shared;
-
 int full_sid;
-    int empty_sid;
-    struct sembuf full_sem;
-    struct sembuf empty_sem;
+int empty_sid;
+
+struct sembuf full_sem;
+struct sembuf empty_sem;
+
+typedef struct node {
+    struct node *next;
+    int value;
+};
+
+struct node *root;
+
+void addElement(int a) {
+    if(root == NULL) {
+        root = malloc(sizeof(struct node));
+        root->next = NULL;
+        root->value = a;
+    } else {
+        struct node *tmp = root;
+        while(tmp->next != 0) {
+            tmp = tmp->next;
+        }
+
+        struct node *newNode = malloc(sizeof(struct node));
+        newNode->next = NULL;
+        newNode->value = a;
+        tmp->next = newNode; 
+    }
+}
+
+int getFirstElementValue() {
+    if(root != NULL) {
+        int tmp = root->value;
+        if(root->next != NULL) {
+            root = root->next;
+        } else {
+            root = NULL;
+        }
+
+        return tmp;
+
+    } else {
+        printf("Buffer is empty!");
+        return -1;
+    }
+}
 
 void printBuffer() {
     int i = 0;
+    struct node* tmp = root;
+
     printf("[");
-    for(i = 0; i < BUFFER_SIZE; i++) {
-        printf("%d, ", shared.buf[i]);
-        fflush(stdout);
+    while(tmp) {
+        printf("%d, ", tmp->value);
+        tmp = tmp->next;
     }
     printf("]\n");
     fflush(stdout);
@@ -59,26 +90,21 @@ void *Producer(void *arg)
         empty_sem.sem_op = -1;
         semop(empty_sid, &empty_sem, 1);
 
-        shared.buf[shared.in] = item;
         printf("P%d produkuje %d ...\n", index, item);
         fflush(stdout);
 
-        // Print current status
-        printBuffer();
-        printSemVals();
-
-        // Put produced value to stack
-        shared.in = (shared.in + 1) % BUFFER_SIZE;
-
-        fflush(stdout);
+        // Do some work
+        usleep(1000000 * (rand() / (RAND_MAX+1.0)));
 
         // Announce that value has been produced
         full_sem.sem_op = 1;
         semop(full_sid, &full_sem, 1);
 
+        printf("P%d wyprodukował %d.\n", index, item);
+        addElement(item);
+        printBuffer();
         printSemVals();
-
-        usleep(600000);
+        fflush(stdout);
     }
     return NULL;
 }
@@ -89,16 +115,12 @@ void *Consumer(void *arg)
 
     index = (int)arg;
     for (i=HOW_MANY_ITERATIONS; i > 0; i--) {
-
-        printSemVals();
     
         // Try to acquire
         full_sem.sem_op = -1;
         semop(full_sid, &full_sem, 1);
 
-        item=shared.buf[shared.out];
-        shared.buf[shared.out] = -1;
-        shared.out = (shared.out + 1) % BUFFER_SIZE;
+        item = getFirstElementValue();
 
         printf("K%d zjada  %d ...\n", index, item);
         fflush(stdout);
@@ -112,7 +134,7 @@ void *Consumer(void *arg)
 
         printSemVals();
 
-        usleep(500000);
+        usleep(1000000 * (rand() / (RAND_MAX+1.0)) );
     }
     return NULL;
 }
@@ -126,7 +148,7 @@ int main() {
     full_sid = semget(0x200, 1, 0600 | IPC_CREAT);
 
     // Error handling
-    if (shared.empty_sid == -1 || shared.full_sid == -1) {
+    if (empty_sid == -1 || full_sid == -1) {
         perror("semget");
         exit(1); 
     }
