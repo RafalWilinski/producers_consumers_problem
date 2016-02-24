@@ -6,135 +6,196 @@
 #include <unistd.h>
 
 #define BUFFER_SIZE 5
-#define PRODUCERS_COUNT 2
-#define CONSUMERS_COUNT 2
-#define HOW_MANY_ITERATIONS 1024
+#define PRODUCERS_COUNT 5
+#define CONSUMERS_COUNT 4
+#define HOW_MANY_ITERATIONS 102400000
+#define PROD_SPEED 45
+#define CONS_SPEED 34
 
 int full_sid;
 int empty_sid;
+int full_arr_sid;
+int empty_arr_sid;
 
 struct sembuf full_sem;
 struct sembuf empty_sem;
+struct sembuf full_arr_sem;
+struct sembuf empty_arr_sem;
 
-typedef struct node {
-    struct node *next;
-    int value;
-};
-
-struct node *root;
-
-void addElement(int a) {
-    if(root == NULL) {
-        root = malloc(sizeof(struct node));
-        root->next = NULL;
-        root->value = a;
-    } else {
-        struct node *tmp = root;
-        while(tmp->next != 0) {
-            tmp = tmp->next;
-        }
-
-        struct node *newNode = malloc(sizeof(struct node));
-        newNode->next = NULL;
-        newNode->value = a;
-        tmp->next = newNode; 
-    }
-}
-
-int getFirstElementValue() {
-    if(root != NULL) {
-        int tmp = root->value;
-        if(root->next != NULL) {
-            root = root->next;
-        } else {
-            root = NULL;
-        }
-
-        return tmp;
-
-    } else {
-        printf("Buffer is empty!");
-        return -1;
-    }
-}
+int items[BUFFER_SIZE] = {-1, -1, -1, -1, -1};
+int emptyPositions[BUFFER_SIZE] = {0, 1, 2, 3, 4};
+int fullPositions[BUFFER_SIZE] = {-1, -1, -1, -1, -1};
+int emptyPositionsIn = 0, emptyPositionsOut = 0, fullPositionsIn = 0, fullPositionsOut = 0;
 
 void printBuffer() {
-    int i = 0;
-    struct node* tmp = root;
-
-    printf("[");
-    while(tmp) {
-        printf("%d, ", tmp->value);
-        tmp = tmp->next;
+    printf("Buffer: {");
+    for (int i = 0; i < BUFFER_SIZE; ++i) {
+        printf("%d, ", items[i]);
+        fflush(stdout);
     }
-    printf("]\n");
+    printf("}\n");
     fflush(stdout);
+    usleep(10);
+}
+
+void printFreePositions() {
+    printf("Free: {");
+    for (int i = 0; i < BUFFER_SIZE; ++i) {
+        printf("%d, ", emptyPositions[i]);
+        fflush(stdout);
+    }
+    printf("} In: %d, Out: %d\n", emptyPositionsIn, emptyPositionsOut);
+    fflush(stdout);
+    usleep(10);
+}
+
+void printWorkingPositions() {
+    printf("Working: {");
+    for (int i = 0; i < BUFFER_SIZE; ++i) {
+        printf("%d, ", fullPositions[i]);
+        fflush(stdout);
+    }
+    printf("} In: %d, Out: %d\n", fullPositionsIn, fullPositionsOut);
+    fflush(stdout);
+    usleep(10);
 }
 
 void printSemVals() {
-    int empty = semctl(empty_sid, 0, GETVAL, 0); 
-    int full = semctl(full_sid, 0, GETVAL, 0); 
+    int empty = semctl(empty_sid, 0, GETVAL, 0);
+    int full = semctl(full_sid, 0, GETVAL, 0);
     printf("Empty: %d Full: %d\n", empty, full);
     fflush(stdout);
+    usleep(10);
+}
+
+void printAllInfo() {
+    printSemVals();
+    printBuffer();
+    printFreePositions();
+    printWorkingPositions();
 }
 
 void *Producer(void *arg)
 {
-    int i, item, index;
-    index = (int) arg;
+    int i, item, bufferIndex;
 
     for (i=0; i < HOW_MANY_ITERATIONS; i++) {
-        item = rand();
+        printf("Zgloszenie producenta.\n");
 
-        // Try to acquire if there's free space on stack
         empty_sem.sem_op = -1;
         semop(empty_sid, &empty_sem, 1);
 
-        printf("P%d produkuje %d ...\n", index, item);
-        fflush(stdout);
+        printf("Rozpoczynam produkcje. Wolne miejsca do produkcji: \n");
+        printFreePositions();
 
-        // Do some work
-        usleep(1000000 * (rand() / (RAND_MAX+1.0)));
+        // Zablokuj tablice empty
+        empty_arr_sem.sem_op = -1;
+        semop(empty_arr_sid, &empty_arr_sem, 1);
 
-        // Announce that value has been produced
+        // Rezerwuj miejsce w buforze z tablicy free[out]
+        bufferIndex = emptyPositions[emptyPositionsIn];
+        emptyPositions[emptyPositionsIn] = -1;
+        emptyPositionsIn = (emptyPositionsIn + 1) % BUFFER_SIZE;
+
+        // Odblokuj tablice empty
+        empty_arr_sem.sem_op = 1;
+        semop(empty_arr_sid, &empty_arr_sem, 1);
+
+        printf("Miejsce do ktorego zostanie wyprodukowany przedmiot: %d. Rozpoczynam produkcje...\n", bufferIndex);
+
+        // Zacznij wytwarzac przedmiot
+        usleep((useconds_t) (10000000 * (rand() / (RAND_MAX + 0.5))) / PROD_SPEED);
+        item = rand();
+
+        printf("Produkcja zakonczona. Produkt: %d\n", item);
+
+        // Dodaj element do bufora
+        items[bufferIndex]= item;
+        printf("Stan bufora po dodaniu: \n");
+        printBuffer();
+
+        // Zablokuj tablice full
+        full_arr_sem.sem_op = -1;
+        semop(full_arr_sid, &full_arr_sem, 1);
+
+        // Dodaj element do tablicy working[in]
+        fullPositions[fullPositionsOut] = bufferIndex;
+        fullPositionsOut = (fullPositionsOut + 1) % BUFFER_SIZE;
+
+        // Odblokuj tablice full
+        full_arr_sem.sem_op = 1;
+        semop(full_arr_sid, &full_arr_sem, 1);
+
+        // Powiadom o tym, ze przedmiot do konsumpcji jest juz dostępny
         full_sem.sem_op = 1;
         semop(full_sid, &full_sem, 1);
 
-        printf("P%d wyprodukował %d.\n", index, item);
-        addElement(item);
-        printBuffer();
-        printSemVals();
-        fflush(stdout);
+        printf("Koniec produkcji...\n");
+
+        printAllInfo();
+
+        usleep((useconds_t) (10000000 * (rand() / (RAND_MAX + 0.5))) / PROD_SPEED);
     }
     return NULL;
 }
 
 void *Consumer(void *arg)
 {
-    int i, item, index;
+    int i, item, bufferIndex;
 
-    index = (int)arg;
     for (i=HOW_MANY_ITERATIONS; i > 0; i--) {
-    
-        // Try to acquire
+
+        printf("Zgloszenie konsumenta.\n");
         full_sem.sem_op = -1;
         semop(full_sid, &full_sem, 1);
 
-        item = getFirstElementValue();
+        printf("Rozpoczynam konsumowanie. Co można zjeść: \n");
+        printWorkingPositions();
 
-        printf("K%d zjada  %d ...\n", index, item);
-        fflush(stdout);
+        // Zablokuj tablice full
+        full_arr_sem.sem_op = -1;
+        semop(full_arr_sid, &full_arr_sem, 1);
 
-        // Print current algoritm status
-        printBuffer();
+        // Rezerwuj miejsce w buforze z tablicy free[out]
+        bufferIndex = fullPositions[fullPositionsIn];
+        fullPositionsIn = (fullPositionsIn + 1) % BUFFER_SIZE;
 
-        // Announce that there's one more empty place
+        // Odblokuj tablice empty
+        full_arr_sem.sem_op = 1;
+        semop(full_arr_sid, &full_arr_sem, 1);
+
+        printf("Miejsce z ktorego zostanie zjedzony przedmiot: %d. Rozpoczynam konsumpcje...\n", bufferIndex);
+
+        // Zacznij konsumowac przedmiot
+        usleep((useconds_t) (10000000 * (rand() / (RAND_MAX + 0.5 ))) / CONS_SPEED);
+        item = items[bufferIndex];
+
+        // Usun przedmiot z bufora
+        items[bufferIndex] = -1;
+
+        if(item == -1 || bufferIndex == -1) printf("\n******************\n****** BŁĄD ******\n*****************\n");
+        printf("Konsumpcja zakonczona. Zjedzony: %d\n", item);
+
+        // Zablokuj tablice empty
+        empty_arr_sem.sem_op = -1;
+        semop(empty_arr_sid, &empty_arr_sem, 1);
+
+        // Dodaj element do tablicy empty[in]
+        emptyPositions[emptyPositionsOut] = bufferIndex;
+        emptyPositionsOut = (emptyPositionsOut + 1) % BUFFER_SIZE;
+
+        // Odblokuj tablice full
+        empty_arr_sem.sem_op = 1;
+        semop(empty_arr_sid, &empty_arr_sem, 1);
+
+        // Po zjedzeniu powiedz, ze jest o jeden wiecej wolny
         empty_sem.sem_op = 1;
         semop(empty_sid, &empty_sem, 1);
 
-        printSemVals();
+        printf("Po konsupmcji.\n");
 
-        usleep(1000000 * (rand() / (RAND_MAX+1.0)) );
+        printAllInfo();
+        usleep((useconds_t) (10000000 * (rand() / (RAND_MAX + 0.5))) / CONS_SPEED);
     }
     return NULL;
 }
@@ -145,22 +206,30 @@ int main() {
 
     // Initialize semaphores
     empty_sid = semget(0x123, 1, 0600 | IPC_CREAT);
-    full_sid = semget(0x200, 1, 0600 | IPC_CREAT);
+    full_sid = semget(0x124, 1, 0600 | IPC_CREAT);
+    empty_arr_sid = semget(0x125, 1, 0600 | IPC_CREAT);
+    full_arr_sid = semget(0x126, 1, 0600 | IPC_CREAT);
 
     // Error handling
-    if (empty_sid == -1 || full_sid == -1) {
+    if (empty_sid == -1 || full_sid == -1 || empty_arr_sid == -1 || full_arr_sid == -1) {
         perror("semget");
-        exit(1); 
+        exit(1);
     }
 
     empty_sem.sem_num = 0;
     empty_sem.sem_flg = 0;
     full_sem.sem_flg = 0;
     full_sem.sem_num = 0;
+    empty_arr_sem.sem_num = 0;
+    empty_arr_sem.sem_flg = 0;
+    full_arr_sem.sem_flg = 0;
+    full_arr_sem.sem_num = 0;
 
     // Reset semaphores to initial state
     semctl(empty_sid, 0, SETVAL, BUFFER_SIZE);
     semctl(full_sid, 0, SETVAL, 0);
+    semctl(empty_arr_sid, 0, SETVAL, 1);
+    semctl(full_arr_sid, 0, SETVAL, 1);
 
     printSemVals();
 
